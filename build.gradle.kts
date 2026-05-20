@@ -51,8 +51,8 @@ tasks.register("release") {
     description = "Tags HEAD as v<version> and pushes the tag to origin to trigger CI publish."
     doLast {
         val tag = "v$version"
-        exec { commandLine("git", "tag", "-f", tag) }
-        exec { commandLine("git", "push", "origin", "-f", "refs/tags/$tag") }
+        project.exec { commandLine("git", "tag", "-f", tag) }
+        project.exec { commandLine("git", "push", "origin", "-f", "refs/tags/$tag") }
         println("Pushed $tag — CI publish workflow triggered.")
     }
 }
