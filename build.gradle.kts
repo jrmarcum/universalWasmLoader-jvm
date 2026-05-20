@@ -51,8 +51,13 @@ tasks.register("release") {
     description = "Tags HEAD as v<version> and pushes the tag to origin to trigger CI publish."
     doLast {
         val tag = "v$version"
-        project.exec { commandLine("git", "tag", "-f", tag) }
-        project.exec { commandLine("git", "push", "origin", "-f", "refs/tags/$tag") }
+        for (cmd in listOf(
+            listOf("git", "tag", "-f", tag),
+            listOf("git", "push", "origin", "-f", "refs/tags/$tag")
+        )) {
+            val exit = ProcessBuilder(cmd).inheritIO().start().waitFor()
+            check(exit == 0) { "'${cmd.joinToString(" ")}' failed (exit $exit)" }
+        }
         println("Pushed $tag — CI publish workflow triggered.")
     }
 }
