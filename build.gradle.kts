@@ -46,6 +46,17 @@ tasks.test {
     useJUnitPlatform()
 }
 
+tasks.register("release") {
+    group = "publishing"
+    description = "Tags HEAD as v<version> and pushes the tag to origin to trigger CI publish."
+    doLast {
+        val tag = "v$version"
+        exec { commandLine("git", "tag", "-f", tag) }
+        exec { commandLine("git", "push", "origin", "-f", "refs/tags/$tag") }
+        println("Pushed $tag — CI publish workflow triggered.")
+    }
+}
+
 mavenPublishing {
     publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
     signAllPublications()
