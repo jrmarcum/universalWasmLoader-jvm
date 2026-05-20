@@ -8,6 +8,9 @@ on:
     branches:
       - main
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build and Test
@@ -25,7 +28,9 @@ jobs:
           distribution: 'temurin'
 
       - name: Build and test
-        run: ./gradlew build
+        run: |
+          chmod +x gradlew
+          ./gradlew build
 
   publish:
     name: Publish to Maven Central
@@ -46,13 +51,13 @@ jobs:
 
       - name: Publish to Maven Central
         env:
-          # Central Portal user token (Account → User Token in central.sonatype.com)
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-          # ASCII-armored GPG private key and passphrase
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_PRIVATE_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./gradlew publishAllPublicationsToMavenCentralRepository
+        run: |
+          chmod +x gradlew
+          ./gradlew publishAllPublicationsToMavenCentralRepository
 
       - name: Create release branch
         run: |
