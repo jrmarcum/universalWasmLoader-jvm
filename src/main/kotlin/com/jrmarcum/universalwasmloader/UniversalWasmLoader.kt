@@ -1,9 +1,9 @@
 package com.jrmarcum.universalwasmloader
 
-import com.dylibso.chicory.runtime.HostImports
+import com.dylibso.chicory.runtime.ImportValues
 import com.dylibso.chicory.runtime.Instance
-import com.dylibso.chicory.runtime.Module
-import com.dylibso.chicory.wasm.types.Value
+import com.dylibso.chicory.wasm.Parser
+import com.dylibso.chicory.wasm.types.ExternalType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -13,7 +13,20 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.ArrayBlockingQueue
+
+// ---------------------------------------------------------------------------
+// BoundFunction — a callable wrapping a named export
+// ---------------------------------------------------------------------------
+
+class BoundFunction internal constructor(
+    private val handle: ModuleHandle,
+    private val name: String
+) {
+    operator fun invoke(vararg args: Any?): Any? = handle.call(name, *args)
+}
 
 // ---------------------------------------------------------------------------
 // ModuleHandle — the handle returned by every load/import call
@@ -21,24 +34,20 @@ import java.util.concurrent.ArrayBlockingQueue
 
 class ModuleHandle internal constructor(
     internal val instance: Instance,
-    internal val witDoc: WitDocument?
+    internal val witDoc: WitDocument?,
+    internal val stringAbi: StringAbi
 ) {
     /**
      * Call a WASM export by its camelCase name with JVM-typed arguments.
      * In WIT mode, ABI encoding and decoding are applied automatically.
      * Without a WIT file, calls the raw WASM export with type-inferred encoding.
      */
-    fun call(name: String, vararg args: Any?): Any? {
-        return if (witDoc == null) {
-            callRaw(name, args)
-        } else {
-            callWithAbi(name, args)
-        }
-    }
+    fun call(name: String, vararg args: Any?): Any? =
+        if (witDoc == null) callRaw(name, args) else callWithAbi(name, args)
 
     private fun callRaw(name: String, args: Array<out Any?>): Any? {
         val fn = instance.export(name)
-        val wasmArgs = args.map { Abi.encodeRawArg(it) }.toTypedArray()
+        val wasmArgs = args.map { Abi.encodeRawArg(it) }.toLongArray()
         val result = fn.apply(*wasmArgs)
         return if (result.isEmpty()) null else Abi.decodeRawValue(result[0])
     }
@@ -49,31 +58,53 @@ class ModuleHandle internal constructor(
                 "Export '$name' not found in WIT. Available: ${witDoc.exports.map { it.camelName }}"
             )
 
-        val wasmFn = instance.export(fn.camelName)
-
-        val wasmArgs = mutableListOf<Value>()
+        val wasmFn   = instance.export(fn.camelName)
+        val wasmArgs = mutableListOf<Long>()
         for ((i, param) in fn.params.withIndex()) {
-            wasmArgs.addAll(Abi.encodeArg(instance, param.type, args.getOrNull(i)))
+            wasmArgs.addAll(Abi.encodeArg(instance, param.type, args.getOrNull(i), stringAbi))
         }
 
         return if (fn.result == "string") {
-            val cabiRealloc = instance.export("cabi_realloc")
-            val retBuf = cabiRealloc.apply(
-                Value.i32(0), Value.i32(0), Value.i32(4), Value.i32(8)
-            )[0].asInt()
-            wasmFn.apply(*wasmArgs.toTypedArray(), Value.i32(retBuf))
-            Abi.decodeStringReturn(instance, retBuf)
+            decodeStringReturn(wasmFn, wasmArgs)
         } else {
-            val result = wasmFn.apply(*wasmArgs.toTypedArray())
+            val result = wasmFn.apply(*wasmArgs.toLongArray())
             Abi.decodeResult(fn.result, result)
         }
+    }
+
+    private fun decodeStringReturn(
+        wasmFn: com.dylibso.chicory.runtime.ExportFunction,
+        wasmArgs: MutableList<Long>
+    ): String = when (stringAbi) {
+        StringAbi.CANONICAL -> {
+            // Allocate 8-byte return buffer; pass as trailing arg; read (ptr, len) from it after call.
+            val retBuf = instance.export("cabi_realloc").apply(0L, 0L, 4L, 8L)[0].toInt()
+            wasmArgs.add(retBuf.toLong())
+            wasmFn.apply(*wasmArgs.toLongArray())
+            val raw = instance.memory().readBytes(retBuf, 8)
+            val bb  = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN)
+            String(instance.memory().readBytes(bb.getInt(0), bb.getInt(4)), Charsets.UTF_8)
+        }
+        StringAbi.WASIC -> {
+            // Call normally; read ptr/len from the module's exported globals.
+            wasmFn.apply(*wasmArgs.toLongArray())
+            val ptrExport = findExportByName(instance, "__str_ret_ptr")
+                ?: error("Missing __str_ret_ptr export in wasic module")
+            val lenExport = findExportByName(instance, "__str_ret_len")
+                ?: error("Missing __str_ret_len export in wasic module")
+            val ptr = instance.global(ptrExport.index()).getValue().toInt()
+            val len = instance.global(lenExport.index()).getValue().toInt()
+            String(instance.memory().readBytes(ptr, len), Charsets.UTF_8)
+        }
+        StringAbi.NONE ->
+            throw IllegalStateException("Module has no string return mechanism")
     }
 
     /**
      * Bind a named export as a standalone callable.
      * Approximates JavaScript destructuring: val add = m.bind("add"); add(3, 4)
      */
-    fun bind(name: String): (vararg Any?) -> Any? = { args -> call(name, *args) }
+    fun bind(name: String): BoundFunction = BoundFunction(this, name)
 
     /** True if this handle is the same object instance as [other]. */
     fun isSameInstance(other: ModuleHandle): Boolean = this === other
@@ -93,11 +124,8 @@ class ModuleHandle internal constructor(
 fun wasmLoad(path: String, callbacks: Callbacks = Callbacks()): ModuleHandle {
     val (cleanPath, version) = parseVersionSuffix(path)
     val wasmBytes = loadBytes(cleanPath)
-
-    val witPath   = cleanPath.replace(".wasm", ".wit")
-    val witSource = tryLoadText(witPath)
+    val witSource = tryLoadText(cleanPath.replace(".wasm", ".wit"))
     val witDoc    = witSource?.let { WitParser.parse(it) }
-
     return instantiateFromBytes(wasmBytes, witDoc, callbacks, cleanPath, version)
 }
 
@@ -130,20 +158,18 @@ inline fun <reified T : Any> wasmLoad(path: String, callbacks: Callbacks = Callb
  * @param source  File path or `http(s)://` URL. Append `@N` to pin to a major version.
  * @param callbacks  Host functions called by the WASM module.
  */
-suspend fun wasmImport(source: String, callbacks: Callbacks = Callbacks()): ModuleHandle {
-    return withContext(Dispatchers.IO) {
+suspend fun wasmImport(source: String, callbacks: Callbacks = Callbacks()): ModuleHandle =
+    withContext(Dispatchers.IO) {
         if (source.startsWith("http://") || source.startsWith("https://")) {
             loadFromUrl(source, callbacks)
         } else {
             wasmLoad(source, callbacks)
         }
     }
-}
 
 private suspend fun loadFromUrl(source: String, callbacks: Callbacks): ModuleHandle {
     val (cleanUrl, version) = parseVersionSuffix(source)
     val witUrl = cleanUrl.replace(".wasm", ".wit")
-
     val httpClient = HttpClient.newHttpClient()
 
     val wasmBytes = withContext(Dispatchers.IO) {
@@ -247,7 +273,6 @@ internal fun parseVersionSuffix(path: String): Pair<String, Int?> {
 internal fun loadBytes(path: String): ByteArray {
     val file = File(path)
     if (file.exists()) return file.readBytes()
-    // Fallback: classpath resource (useful for test fixtures packaged in JARs)
     val resource = path.trimStart('/', '\\').let { "/$it" }
     return (ModuleHandle::class.java.getResourceAsStream(resource)
         ?: ModuleHandle::class.java.getResourceAsStream(path)
@@ -268,6 +293,34 @@ internal fun tryLoadText(path: String): String? {
     }
 }
 
+// Scan the export section for an export with the given name (no throws).
+private fun findExportByName(instance: Instance, name: String): com.dylibso.chicory.wasm.types.Export? {
+    val section = instance.module().exportSection()
+    for (i in 0 until section.exportCount()) {
+        val export = section.getExport(i)
+        if (export.name() == name) return export
+    }
+    return null
+}
+
+// Detect which string ABI the module uses based on its exports.
+private fun detectStringAbi(instance: Instance): StringAbi {
+    val section = instance.module().exportSection()
+    var hasCanonical = false
+    var hasWasic = false
+    for (i in 0 until section.exportCount()) {
+        when (section.getExport(i).name()) {
+            "cabi_realloc" -> hasCanonical = true
+            "__malloc"     -> hasWasic = true
+        }
+    }
+    return when {
+        hasCanonical -> StringAbi.CANONICAL
+        hasWasic     -> StringAbi.WASIC
+        else         -> StringAbi.NONE
+    }
+}
+
 private fun instantiateFromBytes(
     wasmBytes: ByteArray,
     witDoc: WitDocument?,
@@ -275,44 +328,42 @@ private fun instantiateFromBytes(
     pathForError: String,
     version: Int?
 ): ModuleHandle {
-    val module  = Module.builder(wasmBytes).build()
-    val memRef  = MemRef()
+    val wasmModule = Parser.parse(wasmBytes)
+    val memRef     = MemRef()
 
-    val hostImports = if (witDoc != null && witDoc.imports.isNotEmpty()) {
+    val importValues = if (witDoc != null && witDoc.imports.isNotEmpty()) {
         Abi.buildImportEnv(witDoc.imports, callbacks, memRef)
     } else {
-        HostImports(emptyArray())
+        ImportValues.empty()
     }
 
-    val instance = Instance.builder(module)
-        .withHostImports(hostImports)
+    val instance = Instance.builder(wasmModule)
+        .withImportValues(importValues)
         .build()
 
     memRef.current = instance.memory()
+
+    val stringAbi = detectStringAbi(instance)
 
     if (version != null) {
         assertVersion(instance, pathForError, version)
     }
 
-    return ModuleHandle(instance, witDoc)
+    return ModuleHandle(instance, witDoc, stringAbi)
 }
 
 private fun assertVersion(instance: Instance, path: String, expected: Int) {
-    // The WASM module exports a mutable i32 global named "version".
-    // In Chicory, globals may be exported as zero-argument functions that return their value,
-    // or accessible via a dedicated globals API depending on the runtime version.
-    // We attempt a direct function call first; if that fails, check via export as Value.
-    try {
-        val versionExport = instance.export("version")
-        val actual = versionExport.apply()[0].asInt()
-        check(actual == expected) {
-            "Version mismatch for '$path': requested @$expected but module exports version=$actual"
-        }
-    } catch (e: IllegalStateException) {
-        throw e
-    } catch (_: Exception) {
-        throw IllegalStateException(
+    val export = findExportByName(instance, "version")
+        ?: throw IllegalStateException(
             "Module '$path' does not export a 'version' global. Requested @$expected."
         )
+    if (export.exportType() != ExternalType.GLOBAL) {
+        throw IllegalStateException(
+            "Module '$path': 'version' export is not a global. Requested @$expected."
+        )
+    }
+    val actual = instance.global(export.index()).getValue().toInt()
+    check(actual == expected) {
+        "Version mismatch for '$path': requested @$expected but module exports version=$actual"
     }
 }

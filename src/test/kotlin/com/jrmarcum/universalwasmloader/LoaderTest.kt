@@ -1,5 +1,7 @@
 package com.jrmarcum.universalwasmloader
 
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -190,9 +192,9 @@ class LoaderTest {
         val pool = InstancePool(fixture("math_50.wasm"), size = 2)
         var r1: Any? = null
         var r2: Any? = null
-        kotlinx.coroutines.coroutineScope {
-            val job1 = kotlinx.coroutines.launch { r1 = pool.run { m -> m.call("add", 3, 4) } }
-            val job2 = kotlinx.coroutines.launch { r2 = pool.run { m -> m.call("square", 5) } }
+        coroutineScope {
+            val job1 = launch { r1 = pool.run { m -> m.call("add", 3, 4) } }
+            val job2 = launch { r2 = pool.run { m -> m.call("square", 5) } }
             job1.join(); job2.join()
         }
         assertEquals(7, r1)

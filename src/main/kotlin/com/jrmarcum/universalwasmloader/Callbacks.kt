@@ -16,23 +16,44 @@ package com.jrmarcum.universalwasmloader
 class Callbacks {
     internal val handlers = mutableMapOf<String, (List<Any?>) -> Any?>()
 
+    // @JvmName differentiates this from the (Any?)->Any? overload at the JVM level
+    // (both erase to Function1 otherwise).
+    @JvmName("onList")
     fun on(camelName: String, handler: (List<Any?>) -> Any?): Callbacks {
         handlers[camelName] = handler
         return this
     }
 
-    // Convenience overloads for common arities.
-    fun on(camelName: String, handler: () -> Any?): Callbacks =
-        on(camelName) { _ -> handler() }
+    fun on(camelName: String, handler: () -> Any?): Callbacks {
+        handlers[camelName] = { _ -> handler() }
+        return this
+    }
 
-    fun on(camelName: String, handler: (Any?) -> Any?): Callbacks =
-        on(camelName) { args -> handler(args.getOrNull(0)) }
+    fun on(camelName: String, handler: (Any?) -> Any?): Callbacks {
+        handlers[camelName] = { args -> handler(if (args.isEmpty()) null else args[0]) }
+        return this
+    }
 
-    fun on(camelName: String, handler: (Any?, Any?) -> Any?): Callbacks =
-        on(camelName) { args -> handler(args.getOrNull(0), args.getOrNull(1)) }
+    fun on(camelName: String, handler: (Any?, Any?) -> Any?): Callbacks {
+        handlers[camelName] = { args ->
+            handler(
+                if (args.isEmpty()) null else args[0],
+                if (args.size < 2) null else args[1]
+            )
+        }
+        return this
+    }
 
-    fun on(camelName: String, handler: (Any?, Any?, Any?) -> Any?): Callbacks =
-        on(camelName) { args -> handler(args.getOrNull(0), args.getOrNull(1), args.getOrNull(2)) }
+    fun on(camelName: String, handler: (Any?, Any?, Any?) -> Any?): Callbacks {
+        handlers[camelName] = { args ->
+            handler(
+                if (args.isEmpty()) null else args[0],
+                if (args.size < 2) null else args[1],
+                if (args.size < 3) null else args[2]
+            )
+        }
+        return this
+    }
 
     internal fun invoke(camelName: String, args: List<Any?>): Any? =
         handlers[camelName]?.invoke(args)
