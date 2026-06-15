@@ -65,7 +65,7 @@ class ModuleHandle internal constructor(
         }
 
         return if (fn.result == "string") {
-            decodeStringReturn(wasmFn, wasmArgs)
+            decodeStringReturn(fn.camelName, wasmFn, wasmArgs)
         } else {
             val result = wasmFn.apply(*wasmArgs.toLongArray())
             Abi.decodeResult(fn.result, result)
@@ -73,17 +73,23 @@ class ModuleHandle internal constructor(
     }
 
     private fun decodeStringReturn(
+        name: String,
         wasmFn: com.dylibso.chicory.runtime.ExportFunction,
         wasmArgs: MutableList<Long>
     ): String = when (stringAbi) {
         StringAbi.CANONICAL -> {
-            // Allocate 8-byte return buffer; pass as trailing arg; read (ptr, len) from it after call.
-            val retBuf = instance.export("cabi_realloc").apply(0L, 0L, 4L, 8L)[0].toInt()
-            wasmArgs.add(retBuf.toLong())
-            wasmFn.apply(*wasmArgs.toLongArray())
-            val raw = instance.memory().readBytes(retBuf, 8)
+            // SPEC 3.0.0 — callee-allocated return. The export returns a single i32
+            // pointer (retArea) to a callee-allocated [ptr, len] pair. Read the pair,
+            // decode the bytes, then call the paired cabi_post_<name>(retArea) export
+            // (if present) so the module can free the allocation.
+            val retArea = wasmFn.apply(*wasmArgs.toLongArray())[0].toInt()
+            val raw = instance.memory().readBytes(retArea, 8)
             val bb  = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN)
-            String(instance.memory().readBytes(bb.getInt(0), bb.getInt(4)), Charsets.UTF_8)
+            val str = String(instance.memory().readBytes(bb.getInt(0), bb.getInt(4)), Charsets.UTF_8)
+            findExportByName(instance, "cabi_post_$name")?.let {
+                instance.export("cabi_post_$name").apply(retArea.toLong())
+            }
+            str
         }
         StringAbi.WASIC -> {
             // Call normally; read ptr/len from the module's exported globals.

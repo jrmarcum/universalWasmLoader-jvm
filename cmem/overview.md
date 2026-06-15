@@ -75,37 +75,39 @@ Import string params (WASM→host) are decoded from `(ptr,len)` off the call sta
 (memory captured right after `Instance.build()`, solving the chicken-and-egg of needing memory inside
 import callbacks).
 
-## ⚠️ SPEC 3.0.0 CONFORMANCE — ACTION NEEDED (string/aggregate RETURNS)
+## ✅ SPEC 3.0.0 CONFORMANCE — DONE (string RETURNS, callee-allocated, 2026-06-15)
 
-The cross-language **`SPEC.md` is now at v3.0.0 (2026-06-15)** — a **BREAKING** change. String/aggregate
+The cross-language **`SPEC.md` is at v3.0.0** — a **BREAKING** change. String
 **returns** moved from the old **caller-allocated out-parameter** convention to the **canonical
 callee-allocated** convention: the export returns an **i32 pointer to a callee-allocated `[ptr,len]`
-pair**; the host reads the pair, then **must call a paired `cabi_post_<name>(retPtr)` export** to let
-the module free that allocation.
+pair**; the host reads the pair, then calls a paired `cabi_post_<name>(retArea)` export (if present)
+to let the module free that allocation.
 
-**This port still implements the OLD pre-3.0.0 return convention** (it predates 2026-06-15; the local
-`SPEC.md` checked into this repo is still labeled **v2.0.0**). Specifically, string-return decoding lives in:
+**This port now implements SPEC 3.0.0 for the CANONICAL profile** (aligned 2026-06-15, VERIFIED via
+`./gradlew test` → 24/24 pass, 0 skipped). String-return decoding:
 
-- **`src/main/kotlin/com/jrmarcum/universalwasmloader/UniversalWasmLoader.kt` — `ModuleHandle.decodeStringReturn(...)` (≈ lines 75–101).**
-  - `StringAbi.CANONICAL` branch (≈ lines 79–87): allocates an **8-byte return buffer**
-    (`cabi_realloc(0,0,4,8)`), **passes it as a trailing arg** (caller-allocated out-param), then reads
-    the little-endian `(ptr,len)` pair from that buffer. This is the OLD out-param convention, NOT the
-    new callee-allocated return pointer.
-  - `StringAbi.WASIC` branch (≈ lines 88–98): reads exported globals `__str_ret_ptr` / `__str_ret_len`
-    (side-channel). Also pre-3.0.0.
-  - **No `cabi_post_<name>` call exists anywhere** in the codebase.
-- Supporting code that also reflects the old model:
-  - `Abi.witTypeToReturnTypes` (`Abi.kt` ≈ lines 27–34) maps `string` returns to **`emptyList()`**
-    ("string returns use out-param or side-channel") — under SPEC 3.0.0 a string return is a single
-    **i32** return value (the `[ptr,len]` pointer).
-  - `callWithAbi` (`UniversalWasmLoader.kt` ≈ lines 55–73) appends the trailing return-area arg only
-    inside `decodeStringReturn`; there is no post-return free step.
+- **`UniversalWasmLoader.kt` — `ModuleHandle.decodeStringReturn(name, wasmFn, wasmArgs)`.**
+  - `StringAbi.CANONICAL` branch: calls the export with **only** the encoded params, captures the
+    single **i32** result `retArea`, reads the little-endian `(ptr,len)` pair from `retArea` /
+    `retArea+4`, decodes the UTF-8 bytes, then calls **`cabi_post_<name>(retArea)`** (looked up via
+    `findExportByName`; skipped if absent), where `<name>` is the camelCase export name. No trailing
+    return-area out-param is passed anymore.
+  - `StringAbi.WASIC` branch: **unchanged** — still reads exported globals `__str_ret_ptr` /
+    `__str_ret_len` (side-channel) after a void call. Kept as a legacy/compat fallback.
+- `Abi.witTypeToReturnTypes(type, stringAbi = StringAbi.NONE)` is now **profile-aware**: a CANONICAL
+  `string` return maps to a single **i32** result; non-CANONICAL string returns keep `emptyList()`
+  (the void side-channel). `buildImportEnv` calls it without `stringAbi` (defaults to `NONE`), so
+  host-import callback returns are unaffected.
 
-**To align with SPEC 3.0.0 (future work):** change the CANONICAL string-return path so the export is
-called with **no** trailing return-area arg, treat its single i32 result as `retPtr`, read
-`[ptr,len]` from `retPtr` (two LE i32s) then bytes, and finally call `cabi_post_<name>(retPtr)` if that
-export exists. Decide how (or whether) to keep the legacy WASIC global side-channel as a compatibility
-fallback. Update the local `SPEC.md` (v2.0.0 → 3.0.0) and the README type-mapping row accordingly.
+**Fixture:** `src/test/resources/tests/strings_50.{wasm,wit}` was replaced with the new-ABI fixture
+from wasmtk (`tests/bindgen_fixtures/strings_50.*`). The new `.wasm` exports `cabi_realloc` (CANONICAL,
+not `__malloc`) plus `cabi_post_greet` / `cabi_post_shout`; export names are camelCase (`greet`,
+`shout`, `strLen`). `math_50` / `booleans_50` / `imports_50` fixtures are untouched. The string
+conformance tests still assert `greet("World")=="Hello, World!"`, `shout("hi")=="hihi"`,
+`strLen("hello")==5` and pass against the new fixture.
+
+String **params** are unchanged (`cabi_realloc(0,0,1,len)` → write → `(ptr,len)`). Numerics/bool
+unchanged. Local `SPEC.md` bumped v2.0.0 → 3.0.0 with the callee-allocated return section.
 
 ## Tests
 

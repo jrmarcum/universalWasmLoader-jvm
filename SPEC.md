@@ -1,6 +1,6 @@
 # Universal WASM Loader — Cross-Language Specification
 
-Version: 2.0.0
+Version: 3.0.0
 Status: Draft
 Reference implementation: `@jrmarcum/universalwasmloader-js` (JSR)
 
@@ -100,7 +100,7 @@ For each WIT `export`:
 | `f32` | pass as-is (number) | return as-is |
 | `f64` | pass as-is (number) | return as-is |
 | `bool` | `value ? 1 : 0` | `result !== 0` |
-| `string` | `TextEncoder` → `cabi_realloc(0,0,1,len)` → write bytes → pass `(ptr, len)` | allocate 8-byte return area via `cabi_realloc(0,0,4,8)`, pass as trailing arg, read `(ptr, len)` back via `DataView` (little-endian i32) |
+| `string` | `TextEncoder` → `cabi_realloc(0,0,1,len)` → write bytes → pass `(ptr, len)` | export returns a single i32 `retArea` pointer to a callee-allocated `[ptr, len]` pair; read `(ptr, len)` via `DataView` (little-endian i32), decode bytes, then call `cabi_post_<name>(retArea)` if exported |
 
 ### Import wrapper (WASM → JS → WASM)
 
@@ -125,12 +125,25 @@ Return values from host callbacks follow the same encoding as export params in r
 3. Write the bytes into WASM linear memory at that pointer.
 4. Pass `(ptr: i32, len: i32)` as two consecutive WASM parameters.
 
-### String returns (export, WASM → JS)
+### String returns (export, WASM → JS) — callee-allocated (SPEC 3.0.0)
 
-1. Allocate an 8-byte return area: `retBuf = cabi_realloc(0, 0, 4, 8)`.
-2. Call the WASM function with `retBuf` appended as a trailing argument (out-parameter).
-3. Read `retPtr = DataView.getInt32(retBuf, true)` and `retLen = DataView.getInt32(retBuf + 4, true)`.
-4. Decode `memory.buffer[retPtr .. retPtr + retLen]` with `TextDecoder`.
+The return is **callee-allocated**: the export itself allocates the result and the
+`[ptr, len]` pair, returning a single i32 pointer to that pair. The host does NOT
+pass a return-area out-parameter.
+
+1. Call the WASM function with **only** the encoded params; capture the single i32
+   result `retArea`.
+2. Read `retPtr = DataView.getInt32(retArea, true)` and
+   `retLen = DataView.getInt32(retArea + 4, true)` from linear memory.
+3. Decode `memory.buffer[retPtr .. retPtr + retLen]` with `TextDecoder`.
+4. Call the paired `cabi_post_<name>(retArea)` export (a `(param i32)` function),
+   where `<name>` is the camelCase export name (e.g. `greet` → `cabi_post_greet`),
+   so the module can free the allocation. If that export is absent, skip this step.
+
+> **Breaking change from v2.0.0.** The previous convention was caller-allocated: the
+> host allocated an 8-byte return area via `cabi_realloc(0,0,4,8)` and passed it as a
+> trailing out-parameter to a void export. SPEC 3.0.0 replaces this with the
+> callee-allocated return pointer + `cabi_post_<name>` free convention above.
 
 ### String params (import callbacks, WASM → JS)
 

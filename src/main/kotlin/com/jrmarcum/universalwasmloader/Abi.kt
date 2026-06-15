@@ -24,8 +24,13 @@ internal object Abi {
         else          -> listOf(ValueType.I32)
     }
 
-    fun witTypeToReturnTypes(type: String?): List<ValueType> = when (type) {
-        null, "string" -> emptyList()   // string returns use out-param or side-channel
+    // Profile-aware. Under SPEC 3.0.0, a CANONICAL `string` return is the
+    // callee-allocated single i32 pointer to a `[ptr, len]` pair, so the export
+    // returns one i32. The WASIC profile keeps its void side-channel return
+    // (ptr/len read from exported globals after a void call).
+    fun witTypeToReturnTypes(type: String?, stringAbi: StringAbi = StringAbi.NONE): List<ValueType> = when (type) {
+        null           -> emptyList()
+        "string"       -> if (stringAbi == StringAbi.CANONICAL) listOf(ValueType.I32) else emptyList()
         "s32", "bool"  -> listOf(ValueType.I32)
         "s64"          -> listOf(ValueType.I64)
         "f32"          -> listOf(ValueType.F32)

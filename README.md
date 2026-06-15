@@ -164,7 +164,7 @@ Suspend function. Same as `wasmLoad` but also accepts `http://`/`https://` URLs.
 | `f32` | `Float` → f32 | f32 → `Float` |
 | `f64` | `Double` → f64 | f64 → `Double` |
 | `bool` | `Boolean` → `1`/`0` | `!= 0` → `Boolean` |
-| `string` | UTF-8 encode → `cabi_realloc` → `(ptr, len)` | 8-byte out-param → UTF-8 decode |
+| `string` | UTF-8 encode → `cabi_realloc` → `(ptr, len)` | i32 return ptr → read `[ptr, len]` → UTF-8 decode → `cabi_post_<name>` (SPEC 3.0.0) |
 
 See [SPEC.md](./SPEC.md) for the full cross-language conformance specification.
 
