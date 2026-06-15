@@ -118,9 +118,73 @@ the repo-root `math.wasm` (numeric, no `.wit`).
 
 ## Build / release flow
 
-- Build + test: `./gradlew build` / `./gradlew test`. Requires JDK 24+.
-- Release: `./gradlew release` tags HEAD `v<version>` and force-pushes the tag, which triggers
-  `.github/workflows/publish.yml` (build → publish to Maven Central via `com.vanniktech.maven.publish`,
-  Sonatype Central Portal, GPG-signed). **Before the first release, four GitHub secrets must be set:**
-  `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`, `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE`. To bump:
-  edit `version` in `build.gradle.kts`, commit, then `./gradlew release`.
+**Version source of truth:** the top-level `version = "X.Y.Z"` line in `build.gradle.kts`. Nothing
+else holds the version, so a bump touches exactly that one line.
+
+**Bump** (mirrors the -js `deno task bump` UX, patch/minor/major, patch default):
+
+```sh
+./gradlew bump                 # patch:  0.1.2 -> 0.1.3  (default)
+./gradlew bump -Pkind=minor    # minor:  0.1.2 -> 0.2.0
+./gradlew bump -Pkind=major    # major:  0.1.2 -> 1.0.0
+# equivalently, directly:  ./scripts/bump.sh [patch|minor|major]
+```
+
+The Gradle `bump` task delegates to `scripts/bump.sh` (one implementation). The script does a
+sed-anchored replace of ONLY the `^version = "..."` line, so dependency version strings and
+`chicoryVersion` are never touched.
+
+**Build + test:** `./gradlew build` / `./gradlew test`. Requires JDK 24+ (JVM target 24, JDK 25
+toolchain).
+
+**Release (bump → tag → push → CI publishes):**
+
+```sh
+./gradlew bump                                   # raise the version
+git commit -am "bump version to v0.1.3"          # commit the bump
+./gradlew release                                # tags v<version> and force-pushes the tag
+```
+
+`./gradlew release` tags HEAD `v<version>` and force-pushes the tag, which triggers
+`.github/workflows/publish.yml`: `test` (gate) → `publishAllPublicationsToMavenCentralRepository`
+(publish to Maven Central via `com.vanniktech.maven.publish`, Sonatype Central Portal, GPG-signed)
+→ create `release/v<version>` branch → `gh release create`.
+
+### `run:`-only workflow (Actions policy)
+
+This org's Actions policy permits **only `jrmarcum`-owned actions**. Any third-party `uses:` step
+(`actions/checkout`, `actions/setup-java`, `gradle/gradle-build-action`, …) causes a
+`startup_failure` — the workflow never runs a single step and nothing reaches Maven Central. So
+`publish.yml` is **entirely `run:` steps**: checkout via `git clone --depth=1 --branch <tag>`,
+JDK 24+ installed via `run:` (reuse a preinstalled Temurin 24/25 under `/usr/lib/jvm`, else download
+Temurin 25 from Adoptium), and the committed Gradle wrapper (`./gradlew`). **Do not reintroduce
+`uses:` steps.** (The previous version of this workflow used `actions/setup-java@v4` and would have
+failed to start.)
+
+### Required owner setup (before the first release)
+
+1. **GitHub repository secrets** (Settings → Secrets and variables → Actions). The workflow maps
+   each to the `ORG_GRADLE_PROJECT_*` Gradle property the vanniktech plugin reads (in-memory signing
+   + Central Portal upload; no `settings.xml` / `secring.gpg`):
+
+   | GitHub secret | Maps to `ORG_GRADLE_PROJECT_…` | What it is |
+   | --- | --- | --- |
+   | `MAVEN_CENTRAL_USERNAME` | `mavenCentralUsername` | Central Portal **user token** name |
+   | `MAVEN_CENTRAL_PASSWORD` | `mavenCentralPassword` | Central Portal **user token** secret |
+   | `GPG_PRIVATE_KEY` | `signingInMemoryKey` | ASCII-armored GPG **private** key (whole block) |
+   | `GPG_PASSPHRASE` | `signingInMemoryKeyPassword` | passphrase for that GPG key |
+
+2. **Maven Central namespace verification.** The groupId is `io.github.jrmarcum`. The
+   `io.github.<user>` namespace is verified on the Central Portal by linking the `jrmarcum` GitHub
+   account (Central Portal → Add Namespace → `io.github.jrmarcum` → verify via the generated TXT/repo
+   challenge). The namespace must show **Verified** before any publish succeeds.
+
+3. **Central Portal account + user token.** Create a Sonatype **Central Portal** account
+   (central.sonatype.com), generate a **user token** (Account → Generate User Token) — its name/secret
+   are the `MAVEN_CENTRAL_USERNAME` / `MAVEN_CENTRAL_PASSWORD` values above.
+
+4. **GPG signing key.** Generate a key (`gpg --gen-key`), **publish the public key** to a keyserver
+   (`gpg --keyserver keyserver.ubuntu.com --send-keys <KEYID>` — Central requires the public key to be
+   discoverable to verify signatures), then export the private key
+   (`gpg --armor --export-secret-keys <KEYID>`) into the `GPG_PRIVATE_KEY` secret and its passphrase
+   into `GPG_PASSPHRASE`.

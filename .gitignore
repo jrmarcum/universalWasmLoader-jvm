@@ -19,6 +19,14 @@
 *.tar.gz
 *.rar
 
+# Gradle wrapper jar must stay tracked despite *.jar above (CI relies on ./gradlew).
+!gradle/wrapper/gradle-wrapper.jar
+
+# Gradle / build artifacts — must never be committed.
+.gradle/
+build/
+.kotlin/
+
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*

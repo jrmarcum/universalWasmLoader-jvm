@@ -10,7 +10,7 @@ Add to your `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.jrmarcum:universal-wasm-loader-jvm:0.1.0")
+    implementation("io.github.jrmarcum:universal-wasm-loader-jvm:0.1.2")
 }
 ```
 
@@ -18,9 +18,9 @@ Or `pom.xml`:
 
 ```xml
 <dependency>
-    <groupId>com.jrmarcum</groupId>
+    <groupId>io.github.jrmarcum</groupId>
     <artifactId>universal-wasm-loader-jvm</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.2</version>
 </dependency>
 ```
 
@@ -175,7 +175,56 @@ See [SPEC.md](./SPEC.md) for the full cross-language conformance specification.
 ./gradlew test       # run tests only
 ```
 
-Requires Java 17+. The Gradle wrapper (`./gradlew`) downloads the correct Gradle version automatically.
+Requires JDK 24+ (the build targets JVM 24 with a JDK 25 toolchain). The Gradle wrapper (`./gradlew`)
+downloads the correct Gradle version automatically.
+
+## Releasing (Maven Central)
+
+The single source of truth for the version is the `version = "X.Y.Z"` line in `build.gradle.kts`.
+
+**1. Bump the version** (patch/minor/major; patch is the default):
+
+```sh
+./gradlew bump                 # patch:  0.1.2 -> 0.1.3
+./gradlew bump -Pkind=minor    # minor:  0.1.2 -> 0.2.0
+./gradlew bump -Pkind=major    # major:  0.1.2 -> 1.0.0
+# or directly:  ./scripts/bump.sh [patch|minor|major]
+```
+
+**2. Commit, then tag + push** to trigger CI:
+
+```sh
+git commit -am "bump version to v0.1.3"
+./gradlew release              # tags v<version> and force-pushes the tag
+```
+
+Pushing the `v*` tag runs `.github/workflows/publish.yml`, which tests, then publishes the signed
+artifacts to **Maven Central** (Sonatype Central Portal) via the `com.vanniktech.maven.publish`
+plugin, then cuts a GitHub Release.
+
+> **`run:`-only workflow.** This org's Actions policy permits only `jrmarcum`-owned actions, so the
+> publish workflow uses **no third-party `uses:` steps** — checkout is `git clone`, the JDK is
+> installed via `run:`, and the committed Gradle wrapper drives the build. Reintroducing any `uses:`
+> step would cause a `startup_failure`.
+
+### Owner setup required before the first release
+
+| GitHub secret | Gradle property (`ORG_GRADLE_PROJECT_…`) | What it is |
+| --- | --- | --- |
+| `MAVEN_CENTRAL_USERNAME` | `mavenCentralUsername` | Central Portal **user token** name |
+| `MAVEN_CENTRAL_PASSWORD` | `mavenCentralPassword` | Central Portal **user token** secret |
+| `GPG_PRIVATE_KEY` | `signingInMemoryKey` | ASCII-armored GPG **private** key block |
+| `GPG_PASSPHRASE` | `signingInMemoryKeyPassword` | passphrase for that GPG key |
+
+Prerequisites (one-time):
+
+1. A **Sonatype Central Portal** account (central.sonatype.com); generate a **user token** for the
+   two `MAVEN_CENTRAL_*` secrets.
+2. **Verify the `io.github.jrmarcum` namespace** on the Central Portal (links the `jrmarcum` GitHub
+   account). The groupId `io.github.jrmarcum` cannot publish until the namespace shows *Verified*.
+3. A **GPG key** whose **public** key is published to a keyserver
+   (`gpg --keyserver keyserver.ubuntu.com --send-keys <KEYID>`); export the private key with
+   `gpg --armor --export-secret-keys <KEYID>` into `GPG_PRIVATE_KEY`.
 
 ## License
 
