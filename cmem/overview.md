@@ -16,8 +16,10 @@ by camelCase WIT export names. It is the JVM-side equivalent of the JS reference
 - **Package registry:** **Maven Central** (Sonatype Central Portal) via the
   `com.vanniktech.maven.publish` plugin. Coordinates: `io.github.jrmarcum:universal-wasm-loader-jvm`
   (the README still shows the older `com.jrmarcum:...` groupId — `build.gradle.kts` is authoritative:
-  group `io.github.jrmarcum`). Current version: **0.1.2** (`build.gradle.kts`). Not yet released —
-  CI publish on `v*` tag requires four GitHub secrets to be set first (see Release flow below).
+  group `io.github.jrmarcum`). Current version: **0.1.2** (`build.gradle.kts`). **FIRST RELEASE
+  PUBLISHED 2026-06-24** — `0.1.2` was published to Maven Central (Central Portal deployment reached
+  `PUBLISHED` after a manual Publish click; mirror sync to `repo1.maven.org` lags ~15 min–few hours
+  after that). See Release flow below for the secret/credential gotchas that blocked the first attempt.
 - **Toolchain:** Gradle 9.x (Kotlin DSL), Kotlin 2.2.0, JVM target 24, JDK 25 toolchain (requires JDK 24+).
 
 ## Source layout
@@ -150,6 +152,40 @@ git commit -am "bump version to v0.1.3"          # commit the bump
 (publish to Maven Central via `com.vanniktech.maven.publish`, Sonatype Central Portal, GPG-signed)
 → create `release/v<version>` branch → `gh release create`.
 
+**Manual run from the GitHub UI (`workflow_dispatch`).** Added 2026-06-24: `publish.yml` also has a
+`workflow_dispatch: {}` trigger, so the workflow is runnable from **Actions → Publish → Run workflow**
+without re-pushing a tag. **Select the TAG (e.g. `v0.1.2`) in the ref dropdown**, not `main`, to
+reproduce a tag-push run (clones the tagged commit + runs the release bookkeeping). The two release
+steps (`Create release branch`, `Create GitHub Release`) are guarded by
+`if: startsWith(github.ref, 'refs/tags/')`, so a branch-dispatch publishes the artifact but skips them.
+
+**⚠️ Central Portal does NOT auto-publish by default.** A successful
+`publishAllPublicationsToMavenCentralRepository` only **uploads** the deployment; it lands in
+`VALIDATED` state and requires a **manual "Publish" button click** at central.sonatype.com →
+Deployments to actually release it (this is what blocked `0.1.2` from appearing until the button was
+hit). To skip the click on future releases, set the deployment to auto-publish — either in the Portal
+account settings or via `publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)`
+in `build.gradle.kts`.
+
+### Credential gotchas that blocked the first release (learned 2026-06-24)
+
+The first release attempts failed repeatedly with `Upload failed: {"error":{"message":"Invalid
+token"}}` at the publish step (build + test + GPG signing all succeeded — the failure was purely
+Central Portal auth). Causes to check, in order:
+
+- The `MAVEN_CENTRAL_USERNAME` / `MAVEN_CENTRAL_PASSWORD` secrets must be the **two bare plain values**
+  from the generated user token — **NOT** the `<server>…</server>` XML block, and **NOT** the
+  **base64 `username:password` blob** the Portal also shows (the plugin base64-encodes internally;
+  pasting the blob double-encodes it → Invalid token).
+- They must be **Repository secrets** under **Settings → Secrets and variables → Actions** (not
+  Environment secrets, not Dependabot secrets, not Variables).
+- Regenerating a user token **revokes the previous one**, so the secrets must hold the *current* token.
+
+**GPG signing key used for `0.1.2`:** RSA-4096, uid `Jon Marcum <jrmarcum.se@gmail.com>`, fingerprint
+`E4D45440A37F73383B38842FFF9D45E2AFFFFB6D` (long id `FF9D45E2AFFFFB6D`), public key published to
+`keyserver.ubuntu.com` + `keys.openpgp.org`. The private key + passphrase live only in the
+`GPG_PRIVATE_KEY` / `GPG_PASSPHRASE` repo secrets (the local exported `.asc` was a scratch file).
+
 ### `run:`-only workflow (Actions policy)
 
 This org's Actions policy permits **only `jrmarcum`-owned actions**. Any third-party `uses:` step
@@ -161,7 +197,7 @@ Temurin 25 from Adoptium), and the committed Gradle wrapper (`./gradlew`). **Do 
 `uses:` steps.** (The previous version of this workflow used `actions/setup-java@v4` and would have
 failed to start.)
 
-### Required owner setup (before the first release)
+### Required owner setup (✅ DONE as of 2026-06-24 — kept as reference for re-keying / forks)
 
 1. **GitHub repository secrets** (Settings → Secrets and variables → Actions). The workflow maps
    each to the `ORG_GRADLE_PROJECT_*` Gradle property the vanniktech plugin reads (in-memory signing
